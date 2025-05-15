@@ -90,12 +90,10 @@ export async function POST(request: NextRequest) {
       }
 
       const linkedInPostPatterns = [
-        /^\/feed\/update\/urn:li:activity:\d+$/,
-        /^\/posts\/([a-zA-Z0-9_-]+-)?activity-\d+-\w+$/,
-        /^\/posts\/(urn:li:ugcPost|urn:li:share):\d+$/,
+        /^\/feed\/update\/.+$/,
+        /^\/posts\/.+$/,
         /^\/pulse\/.+$/,
-        /^\/embed\/feed\/update\/urn:li:share:\d+$/,
-        /^\/embed\/feed\/update\/urn:li:ugcPost:\d+$/,
+        /^\/embed\/feed\/update\/.+$/,
       ];
       const isValidPath = linkedInPostPatterns.some((pattern) =>
         pattern.test(pathname)
