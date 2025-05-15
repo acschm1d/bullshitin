@@ -5,11 +5,14 @@ interface VoteRequestBody {
   action: "upvote" | "downvote";
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: { postId: string } }
-) {
-  const { postId } = params;
+type Props = {
+  params: Promise<{
+    postId: string;
+  }>;
+};
+
+export async function POST(request: NextRequest, context: Props) {
+  const { postId } = await context.params;
 
   if (!postId) {
     return NextResponse.json(
