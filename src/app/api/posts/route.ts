@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { NewPostPayload, EnrichedPostPayload } from "@/types";
-import { getPostsPaginated, addPost, findPostByUrl } from "@/lib/dataStore";
+import { supabase } from "@/lib/supabaseClient";
 import * as cheerio from "cheerio";
 import { francAll } from "franc";
 import ISO6391 from "iso-639-1";
@@ -18,12 +18,38 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { posts, totalPosts } = getPostsPaginated({
-    page,
-    limit,
-    sortBy: "latest",
-  });
-  return NextResponse.json({ posts, totalPosts, page, limit });
+  try {
+    const {
+      data: posts,
+      error,
+      count,
+    } = await supabase
+      .from("posts")
+      .select("*", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .range((page - 1) * limit, page * limit - 1);
+
+    if (error) {
+      console.error("Error fetching posts:", error);
+      return NextResponse.json(
+        { message: "Error fetching posts" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      posts: posts || [],
+      totalPosts: count || 0,
+      page,
+      limit,
+    });
+  } catch (e) {
+    console.error("Unexpected error fetching posts:", e);
+    return NextResponse.json(
+      { message: "Unexpected error fetching posts" },
+      { status: 500 }
+    );
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -94,22 +120,38 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const existingPost = findPostByUrl(cleanedUrl);
-    if (existingPost) {
+    const { data: existingPostData, error: fetchExistingError } = await supabase
+      .from("posts")
+      .select("id, url")
+      .eq("url", cleanedUrl)
+      .maybeSingle();
+
+    if (fetchExistingError) {
+      console.error(
+        `Error checking for existing post with URL ${cleanedUrl}:`,
+        fetchExistingError
+      );
+      return NextResponse.json(
+        { message: "Error checking for existing post" },
+        { status: 500 }
+      );
+    }
+
+    if (existingPostData) {
       return NextResponse.json(
         {
           message: "This post has already been submitted.",
-          existingPostId: existingPost.id,
+          existingPostId: existingPostData.id,
         },
         { status: 409 }
       );
     }
 
     let fetchedTitle: string | undefined;
-    let fetchedAuthor: string | undefined;
     let scrapedMainContentForDetection: string | undefined;
+    let detectedLanguage: string | undefined = "en";
 
-    if (body.title === undefined || body.author === undefined) {
+    if (body.title === undefined) {
       try {
         const metadataResponse = await fetch(cleanedUrl, {
           headers: {
@@ -126,19 +168,16 @@ export async function POST(request: NextRequest) {
           let tempTitle =
             $('meta[property="og:title"]').attr("content")?.trim() ||
             $("title").text()?.trim();
-          let tempAuthor =
-            $('meta[property="article:author"]').attr("content")?.trim() ||
-            $('meta[name="author"]').attr("content")?.trim();
 
           if (tempTitle && tempTitle.includes(" | LinkedIn")) {
             tempTitle = tempTitle
               .substring(0, tempTitle.lastIndexOf(" | LinkedIn"))
               .trim();
           }
-          if (!tempAuthor && tempTitle && tempTitle.includes(": ")) {
+          if (tempTitle && tempTitle.includes(": ")) {
             const parts = tempTitle.split(": ");
-            const potentialAuthor = parts[0];
-            const nameParts = potentialAuthor.split(" ");
+            const potentialAuthorCandidate = parts[0];
+            const nameParts = potentialAuthorCandidate.split(" ");
             if (
               nameParts.length >= 1 &&
               nameParts.length <= 5 &&
@@ -146,7 +185,6 @@ export async function POST(request: NextRequest) {
                 (p) => p.length > 0 && p[0] === p[0].toUpperCase()
               )
             ) {
-              tempAuthor = potentialAuthor;
               tempTitle = parts.slice(1).join(": ").trim();
             }
           }
@@ -156,7 +194,6 @@ export async function POST(request: NextRequest) {
               .trim();
           }
           fetchedTitle = tempTitle;
-          fetchedAuthor = tempAuthor;
 
           const mainContentElements = $(
             ".attributed-text-segment-list__content"
@@ -167,96 +204,33 @@ export async function POST(request: NextRequest) {
               .get()
               .join(" \n\n ")
               .trim();
-            console.log(
-              `Scraped main content for detection (first 200 chars): "${scrapedMainContentForDetection.substring(
-                0,
-                200
-              )}..."`
-            );
-          } else {
-            console.log(
-              "Class 'attributed-text-segment-list__content' not found, using title for detection."
-            );
           }
         } else {
           console.warn(
-            `Failed to fetch LinkedIn URL ${cleanedUrl} for metadata: Status ${metadataResponse.status}`
+            `Failed to fetch metadata from ${cleanedUrl}. Status: ${metadataResponse.status}`
           );
         }
-      } catch (fetchError) {
-        console.error(
-          `Error fetching or parsing LinkedIn URL ${cleanedUrl} for metadata:`,
-          fetchError
-        );
+      } catch (metaError) {
+        console.error(`Error fetching metadata for ${cleanedUrl}:`, metaError);
       }
     }
 
-    let detectedLanguage = "en";
     const textToDetect = scrapedMainContentForDetection || fetchedTitle || "";
-    console.log(
-      `Final text for language detection (first 200 chars): "${textToDetect.substring(
-        0,
-        200
-      )}..."`
-    );
-
     if (textToDetect) {
       const detections = francAll(textToDetect, { minLength: 3 });
-      console.log("FrancAll detections (top 5):", detections.slice(0, 5));
-      let foundMapping = false;
-      if (detections && detections.length > 0) {
-        for (const [langCode3, probability] of detections) {
-          if (langCode3 === "und") {
-            console.log(
-              `  [Loop] Skipping 'und' (undetermined) with probability ${probability}`
-            );
-            continue;
-          }
-          let langCode2_current_iteration: string | undefined;
-          if (langCode3.length === 3) {
-            langCode2_current_iteration = iso6393To1[langCode3];
-            console.log(
-              `  [Loop] For ${langCode3} (Prob: ${probability}): Mapped via iso-639-3/iso6393-to-1.js -> "${langCode2_current_iteration}"`
-            );
-            if (!langCode2_current_iteration) {
-              console.log(
-                `    [Loop] For ${langCode3}: No 2-letter code found in iso-639-3/iso6393-to-1.js mapping.`
-              );
-            }
-          } else if (langCode3.length === 2) {
-            if (ISO6391.validate(langCode3)) {
-              langCode2_current_iteration = langCode3;
-              console.log(
-                `  [Loop] For ${langCode3} (Prob: ${probability}): Already a valid 2-letter code.`
-              );
-            } else {
-              console.log(
-                `  [Loop] For ${langCode3} (Prob: ${probability}): Is 2-letters, but not a valid ISO639-1 code according to ISO6391.validate().`
-              );
-            }
-          } else {
-            console.log(
-              `  [Loop] For ${langCode3} (Prob: ${probability}): Unexpected code length (${langCode3.length}). Not 2 or 3 letters.`
-            );
-          }
-          if (langCode2_current_iteration) {
-            detectedLanguage = langCode2_current_iteration;
-            console.log(
-              `Successfully detected and mapped language: ${detectedLanguage} from ${langCode3} (Prob: ${probability})`
-            );
-            foundMapping = true;
-            break;
-          }
-        }
-        if (!foundMapping) {
-          const topDetection = detections[0] ? detections[0][0] : "N/A";
+      if (detections && detections.length > 0 && detections[0][0] !== "und") {
+        const langCode3 = detections[0][0];
+        const langCode2 = iso6393To1[langCode3] || ISO6391.getCode(langCode3);
+        if (langCode2) {
+          detectedLanguage = langCode2;
+        } else {
           console.warn(
-            `Could not map any detected languages to a valid 2-letter code. Top francAll detection: ${topDetection}. Defaulting to 'en'.`
+            `Could not map detected language code ${langCode3} to a 2-letter code. Defaulting to 'en'.`
           );
         }
       } else {
         console.warn(
-          `Language detection by francAll yielded no results. Text: "${textToDetect.substring(
+          `Language detection yielded no conclusive results for text (first 100 chars): "${textToDetect.substring(
             0,
             100
           )}...". Defaulting to 'en'.`
@@ -268,22 +242,60 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const newPostPayload: EnrichedPostPayload = {
+    const finalTitle = body.title ?? fetchedTitle ?? "Untitled";
+    const finalLanguage = detectedLanguage;
+
+    const newPostForDb: Omit<
+      EnrichedPostPayload,
+      "id" | "created_at" | "upvotes" | "author"
+    > = {
+      title: finalTitle,
       url: cleanedUrl,
-      language: detectedLanguage,
-      title: fetchedTitle || "",
-      author: fetchedAuthor || "",
+      language: finalLanguage,
+      content: body.content ?? scrapedMainContentForDetection,
     };
 
-    const newPost = await addPost(newPostPayload);
-    return NextResponse.json(newPost, { status: 201 });
+    const { data: newPost, error: insertError } = await supabase
+      .from("posts")
+      .insert(newPostForDb)
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error("Error inserting new post:", insertError);
+      if (insertError.code === "23505") {
+        return NextResponse.json(
+          {
+            message:
+              "This post has already been submitted (detected during insert).",
+            existingPostId: "N/A - conflict during insert",
+          },
+          { status: 409 }
+        );
+      }
+      return NextResponse.json(
+        { message: "Failed to save the new post." },
+        { status: 500 }
+      );
+    }
+
+    if (!newPost) {
+      return NextResponse.json(
+        { message: "Failed to save the new post or retrieve it after saving." },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json(newPost as Omit<EnrichedPostPayload, "author">, {
+      status: 201,
+      headers: { "Content-Language": newPost.language || "en" },
+    });
   } catch (error) {
-    console.error("Failed to create post:", error);
+    console.error("Failed to create post (outer catch):", error);
+    const message =
+      error instanceof Error ? error.message : "An unexpected error occurred.";
     return NextResponse.json(
-      {
-        message:
-          "An internal server error occurred while processing your request.",
-      },
+      { message: `Failed to process the request: ${message}` },
       { status: 500 }
     );
   }

@@ -11,7 +11,7 @@ interface PostCardProps {
 const SESSION_STORAGE_VOTE_KEY_PREFIX = "voted_bullshitin_";
 
 export default function PostCard({ post }: PostCardProps) {
-  const [currentVotes, setCurrentVotes] = useState(post.votes);
+  const [currentVotes, setCurrentVotes] = useState(post.upvotes);
   const [isVoting, setIsVoting] = useState(false);
   const [voteError, setVoteError] = useState<string | null>(null);
   const [hasVotedInSession, setHasVotedInSession] = useState(false);
@@ -46,7 +46,7 @@ export default function PostCard({ post }: PostCardProps) {
         throw new Error(updatedPost.message || `Failed to ${action}`);
       }
 
-      setCurrentVotes(updatedPost.votes);
+      setCurrentVotes(updatedPost.upvotes);
 
       // Record vote in session storage
       if (typeof window !== "undefined" && window.sessionStorage) {
@@ -75,10 +75,6 @@ export default function PostCard({ post }: PostCardProps) {
         </a>
       </h3>
 
-      {post.author && (
-        <p className="text-md text-slate-300 mb-1">By: {post.author}</p>
-      )}
-
       {/* Post URL - Display if title was shown, for clarity */}
       {post.title && (
         <p className="text-xs text-slate-500 mb-2 break-all">
@@ -103,7 +99,7 @@ export default function PostCard({ post }: PostCardProps) {
             {post.language}
           </span>
         </p>
-        <p>Posted: {new Date(post.timestamp).toLocaleDateString()}</p>
+        <p>Posted: {new Date(post.created_at).toLocaleDateString()}</p>
       </div>
       <div className="flex items-center justify-between">
         <div className="text-2xl font-bold text-sky-300">
