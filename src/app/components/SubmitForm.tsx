@@ -18,7 +18,7 @@ export default function SubmitForm({ onPostSubmitted }: SubmitFormProps) {
 
     // Basic URL validation (can be improved)
     if (!postUrl.startsWith("https://www.linkedin.com/")) {
-      setMessage("Please enter a valid LinkedIn post URL.");
+      setMessage("Error: Please enter a valid LinkedIn post URL.");
       setIsLoading(false);
       return;
     }
@@ -87,7 +87,7 @@ export default function SubmitForm({ onPostSubmitted }: SubmitFormProps) {
       {message && (
         <p
           className={`text-sm text-center p-3 rounded-md ${
-            message.includes("valid LinkedIn")
+            message.includes("Error:")
               ? "bg-red-500/20 text-red-300"
               : "bg-green-500/20 text-green-300"
           }`}

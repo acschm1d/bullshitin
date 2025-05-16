@@ -253,6 +253,16 @@ export async function POST(request: NextRequest) {
       content: body.content ?? scrapedMainContentForDetection,
     };
 
+    if (!newPostForDb.title || !newPostForDb.content) {
+      return NextResponse.json(
+        {
+          message:
+            "Failed to scrape content from the provided LinkedIn post URL.",
+        },
+        { status: 400 }
+      );
+    }
+
     const { data: newPost, error: insertError } = await supabase
       .from("posts")
       .insert(newPostForDb)
